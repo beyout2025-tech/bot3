@@ -106,37 +106,51 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await update.message.reply_text("اختر من القائمة الرئيسية:", reply_markup=reply_markup)
 
-
-# دالة أمر /start
+# دالة أمر /start المحدثة بإشعار دخول مفصل
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = user.id
     db = load_db()
     
-    # إرسال إشعار للمدير عند دخول مستخدم جديد
+    # إرسال إشعار للمدير عند دخول مستخدم جديد فقط
     is_new_user = user_id not in db["users"]
     if is_new_user:
         db["users"].append(user_id)
         save_db(db)
         
-        # لا ترسل إشعار الدخول إلى المستخدم نفسه إذا كان مديرًا
-        admin_ids_to_notify = [admin_id for admin_id in db["admins"] if admin_id != user_id]
-        if admin_ids_to_notify:
-            message_to_admin = (
-                f"**🔔 مستخدم جديد دخل البوت!**\n\n"
-                f"**الاسم:** {user.first_name} {user.last_name or ''}\n"
-                f"**المعرف (@):** {user.username or 'لا يوجد'}\n"
-                f"**معرف المستخدم (ID):** `{user_id}`"
-            )
-            for admin_id in admin_ids_to_notify:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=message_to_admin,
-                    parse_mode='Markdown'
-                )
+        # تجهيز البيانات للإشعار
+        total_users = len(db["users"])
+        user_name = f"{user.first_name} {user.last_name or ''}".strip()
+        username = f"@{user.username}" if user.username else "لا يوجد"
+        
+        # القالب الذي طلبته
+        message_to_admin = (
+            f"تم دخول شخص جديد إلى البوت الخاص بك 👾\n"
+            f"            -----------------------\n"
+            f"• معلومات العضو الجديد .\n\n"
+            f"• الاسم : {user_name}\n"
+            f"• معرف : {username}\n"
+            f"• الايدي : `{user_id}`\n"
+            f"            -----------------------\n"
+            f"• عدد الأعضاء الكلي : {total_users}"
+        )
+        
+        # إرسال الإشعار لجميع المديرين المسجلين
+        for admin_id in db["admins"]:
+            try:
+                # التأكد من عدم إرسال إشعار للمدير عن نفسه إذا كان هو من دخل
+                if admin_id != user_id:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=message_to_admin,
+                        parse_mode='Markdown'
+                    )
+            except Exception:
+                continue
     
     await update.message.reply_text("أهلاً بك في بوت الدورات التدريبية!")
     await show_main_menu(update, context)
+
 
 # دالة لعرض التصنيفات
 async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -211,7 +225,7 @@ async def show_course_details(update: Update, context: ContextTypes.DEFAULT_TYPE
     message_text = (
         f"**{course['name']}**\n\n"
         f"**الوصف:** {course['description']}\n"
-        f"**السعر:** {course['price']} ريال يمني\n"
+        f"**السعر:** {course['price']} دولار\n"
         f"**الحالة:** {'✅ متاحة للتسجيل' if course['active'] else '❌ غير متاحة حالياً'}"
     )
     
@@ -1115,6 +1129,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 
 
