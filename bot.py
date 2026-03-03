@@ -1,3 +1,4 @@
+#bot.py
 import os
 import logging
 import json
@@ -494,23 +495,47 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer()
     await query.edit_message_text("الرجاء إرسال الرسالة التي تريد إرسالها لجميع المستخدمين:")
     return GET_BROADCAST_MESSAGE
-
+#الرسائل الجماعية
 async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message_text = update.message.text
     db = load_db()
-    users = db["users"]
+    users = db.get("users", [])
     
+    if not users:
+        await update.message.reply_text("⚠️ لا يوجد مستخدمون في قاعدة البيانات لإرسال الرسالة لهم.")
+        return ConversationHandler.END
+
     success_count = 0
     fail_count = 0
     
+    # إشعار للمدير ببدء العملية لكي لا يظن أن البوت معلق
+    status_msg = await update.message.reply_text("⏳ جاري بدء الإرسال الجماعي... يرجى الانتظار.")
+    
     for user_id in users:
         try:
-            await context.bot.send_message(chat_id=user_id, text=message_text)
+            # التأكد من تحويل المعرف لرقم صحيح (حل مشكلة الـ String)
+            await context.bot.send_message(
+                chat_id=int(user_id), 
+                text=message_text,
+                parse_mode='Markdown' # لدعم التنسيق الغامق والمائل في رسالتك
+            )
             success_count += 1
-        except Exception:
+        except Exception as e:
+            # تسجيل الخطأ وتجاوز المستخدم الذي حظر البوت
+            logging.error(f"Error sending to {user_id}: {e}")
             fail_count += 1
 
-    await update.message.reply_text(f"تم إرسال الرسالة بنجاح إلى {success_count} مستخدم.\nفشل الإرسال إلى {fail_count} مستخدم.", reply_markup=ReplyKeyboardRemove())
+    # تحديث الرسالة النهائية بالنتائج
+    result_text = (
+        f"✅ **اكتملت عملية الإرسال الجماعي**\n"
+        f"-----------------------\n"
+        f"• تم الإرسال بنجاح: {success_count}\n"
+        f"• فشل الإرسال: {fail_count}\n"
+        f"-----------------------\n"
+        f"إجمالي القائمة: {len(users)}"
+    )
+    
+    await status_msg.edit_text(result_text, parse_mode='Markdown')
     return ConversationHandler.END
 
 
