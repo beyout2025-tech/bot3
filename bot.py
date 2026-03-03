@@ -996,7 +996,9 @@ async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     data = query.data
-
+    
+    await query.answer()
+    
     if data == "show_categories":
         await show_categories(update, context)
     elif data == "main_menu":
@@ -1154,5 +1156,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
