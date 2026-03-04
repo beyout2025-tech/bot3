@@ -2,6 +2,7 @@
 import os
 import logging
 import json
+import asyncio
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -58,30 +59,59 @@ DB_FILE = "db.json"
     DELETE_COURSE_CONFIRM,
     EDIT_COURSE_CAT,
     MOVE_COURSE_SELECT_COURSE, # حالة جديدة لنقل الدورة
-    MOVE_COURSE_SELECT_CAT, # حالة جديدة لاختيار التصنيف الجديد
-) = range(7, 25) # تم تعديل مدى الأرقام ليشمل الحالات الجديدة
+    MOVE_COURSE_SELECT_CAT, # حالة جديدة لاختيار القسم الجديد
+    GET_BACKUP_FILE,
+    GET_PROMO_NAME,    # حالة جديدة
+    GET_PROMO_PERCENT, # حالة جديدة
+    CONFIRM_FINAL_DELETE,
+) = range(7, 29)
+
+
 
 # دالة لقراءة البيانات من ملف JSON
 def load_db():
+    # 1. التحقق من وجود الملف أو أنه فارغ
+    if not os.path.exists(DB_FILE) or os.stat(DB_FILE).st_size == 0:
+        data = {
+            "users": [DEV_ID],
+            "admins": [DEV_ID],
+            "categories": [],
+            "courses": [],
+            "registrations": [], 
+            "promo_codes": {} 
+        }
+        save_db(data)
+        return data
+
+    # 2. محاولة قراءة البيانات
     try:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        # إنشاء بنية فارغة إذا لم يكن الملف موجودًا
-        data = {
-            "users": [873158772],
-            "admins": [873158772],
-            "categories": [],
-            "courses": [],
-            "registrations": []
-        }
-    
-    # ضمان وجود الـ DEV_ID دائمًا في قائمة المديرين
+    except Exception:
+        # في حال وجود خطأ في بنية الملف، ننشئ هيكل جديد
+        data = {"users": [DEV_ID], "admins": [DEV_ID], "categories": [], "courses": [], "registrations": [], "promo_codes": {}}
+        save_db(data)
+        return data
+
+    # 3. تحديث الهيكل إذا لزم الأمر (Logic Check)
+    needs_save = False
+
+    if "promo_codes" not in data:
+        data["promo_codes"] = {}
+        needs_save = True
+
     if DEV_ID not in data["admins"]:
         data["admins"].append(DEV_ID)
+        needs_save = True
+    
+    # إذا حدث أي تغيير في الهيكل، احفظ فوراً
+    if needs_save:
         save_db(data)
         
     return data
+
+
+
 
 # دالة لحفظ البيانات في ملف JSON
 def save_db(data):
@@ -94,7 +124,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     
     keyboard = [
-        [InlineKeyboardButton("📚 استعراض التصنيفات", callback_data="show_categories")]
+        [InlineKeyboardButton("📚 استعراض الاقسام", callback_data="show_categories")]
     ]
     if user_id in db["admins"]:
         keyboard.append([InlineKeyboardButton("🔧 لوحة المطور", callback_data="dev_panel")])
@@ -153,7 +183,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await show_main_menu(update, context)
 
 
-# دالة لعرض التصنيفات
+# دالة طلب معرف المشرف (تستدعى عند الضغط على الزر)
+async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("👤 أرسل معرف المستخدم (User ID) الذي تريد منحه صلاحيات الإدارة:")
+    return GET_ADMIN_ID_TO_ADD
+
+
+
+
+# دالة لعرض الاقسام
 async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -162,7 +202,7 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     categories = db["categories"]
     
     if not categories:
-        await query.edit_message_text(text="لا توجد تصنيفات متاحة حالياً.")
+        await query.edit_message_text(text="لا توجد أقسام متاحة حالياً.")
         return
 
     keyboard = []
@@ -175,9 +215,9 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     keyboard.append([InlineKeyboardButton("⬅️ رجوع", callback_data="main_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text="اختر التصنيف الذي تهتم به:", reply_markup=reply_markup)
+    await query.edit_message_text(text="اختر القسم الذي تهتم به:", reply_markup=reply_markup)
 
-# دالة لعرض الدورات ضمن تصنيف معين
+# دالة لعرض الدورات ضمن قسم معين
 async def show_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -189,7 +229,7 @@ async def show_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     
     if not courses_in_category:
         await query.edit_message_text(
-            text=f"لا توجد دورات متاحة حالياً في تصنيف '{category_name}'.",
+            text=f"لا توجد دورات متاحة حالياً في قسم '{category_name}'.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ رجوع", callback_data="show_categories")]])
         )
         return
@@ -207,7 +247,7 @@ async def show_courses(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
     keyboard.append([InlineKeyboardButton("⬅️ رجوع", callback_data="show_categories")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text=f"الدورات المتاحة في تصنيف '{category_name}':", reply_markup=reply_markup)
+    await query.edit_message_text(text=f"الدورات المتاحة في قسم '{category_name}':", reply_markup=reply_markup)
 
 # دالة لعرض تفاصيل الدورة
 async def show_course_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -364,7 +404,11 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 parse_mode='Markdown'
             )
         
+            # التذكير بعد 24 ساعة (86400 ثانية)
+    context.job_queue.run_once(send_follow_up, 86400, chat_id=update.effective_chat.id, data=update.effective_user.id)
+    
     return ConversationHandler.END
+
 
 
 # دالة لعرض لوحة المدير
@@ -381,8 +425,11 @@ async def show_dev_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         [InlineKeyboardButton("📊 إحصائيات", callback_data="dev_stats")],
         [InlineKeyboardButton("👤 إدارة المستخدمين", callback_data="dev_users")],
         [InlineKeyboardButton("📚 إدارة الدورات", callback_data="dev_courses")],
-        [InlineKeyboardButton("🗂️ إدارة التصنيفات", callback_data="dev_categories")],
+        [InlineKeyboardButton("🗂️ إدارة الاقسام", callback_data="dev_categories")],
         [InlineKeyboardButton("📢 إرسال رسالة جماعية", callback_data="dev_broadcast")],
+        [InlineKeyboardButton("🎫 إضافة كود خصم", callback_data="dev_add_promo")], # أضف هذا السطر
+        [InlineKeyboardButton("📥 تحميل نسخة احتياطية", callback_data="backup_download")], # زر التحميل
+        [InlineKeyboardButton("📤 رفع نسخة احتياطية", callback_data="backup_upload")],   # زر الرفع
         [InlineKeyboardButton("⬅️ رجوع", callback_data="main_menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -431,32 +478,44 @@ async def show_dev_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.edit_message_text("اختر عملية إدارة المستخدمين:", reply_markup=reply_markup)
 
 
-async def add_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text("أرسل معرف المستخدم (User ID) الذي تريد إضافته كمشرف:")
-    return GET_ADMIN_ID_TO_ADD
-
+#ارسال رسالة للمشرف
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     try:
+        # محاولة تحويل النص لرقم
         new_admin_id = int(update.message.text)
         db = load_db()
+        
         if new_admin_id in db["admins"]:
-            await update.message.reply_text("هذا المستخدم هو مشرف بالفعل.")
-        else:
-            db["admins"].append(new_admin_id)
-            save_db(db)
-            await update.message.reply_text(f"تم إضافة المستخدم {new_admin_id} كمشرف بنجاح.", reply_markup=ReplyKeyboardRemove())
+            await update.message.reply_text("⚠️ هذا المستخدم هو مشرف بالفعل.")
+            return ConversationHandler.END # هنا ننهي لأن العملية تمت أو لا داعي للتكرار
             
-            # إرسال إشعار للمستخدم الجديد أنه أصبح مشرفاً
+        # إضافة المشرف
+        db["admins"].append(new_admin_id)
+        save_db(db)
+        await update.message.reply_text(
+            f"✅ تم إضافة المستخدم {new_admin_id} كمشرف بنجاح.", 
+            reply_markup=ReplyKeyboardRemove()
+        )
+        
+        # محاولة إشعار المشرف الجديد
+        try:
             await context.bot.send_message(
                 chat_id=new_admin_id,
                 text="✅ تهانينا! لقد تم إضافتك كمدير في البوت."
             )
+        except Exception:
+            await update.message.reply_text("💡 تم التفعيل، لكن لم نتمكن من إرسال إشعار للمستخدم.")
             
+        return ConversationHandler.END # نجحت العملية، ننهي المحادثة
+
     except ValueError:
-        await update.message.reply_text("الرجاء إرسال رقم صحيح.")
-    return ConversationHandler.END
+        # ❌ التعديل الجوهري هنا:
+        await update.message.reply_text(
+            "❌ خطأ: أرسل (User ID) بالأرقام فقط.\n"
+            "حاول مرة أخرى أو أرسل /cancel للإلغاء:"
+        )
+        return GET_ADMIN_ID_TO_ADD # 👈 نرجعه لنفس الحالة بدلاً من END ليبقى البوت ينتظر الرقم
+
 
 
 async def remove_admin_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -496,6 +555,8 @@ async def broadcast_start(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text("الرجاء إرسال الرسالة التي تريد إرسالها لجميع المستخدمين:")
     return GET_BROADCAST_MESSAGE
 #الرسائل الجماعية
+ # تأكد من وجود هذا الاستيراد في أعلى الملف
+
 async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message_text = update.message.text
     db = load_db()
@@ -508,31 +569,34 @@ async def send_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     success_count = 0
     fail_count = 0
     
-    # إشعار للمدير ببدء العملية لكي لا يظن أن البوت معلق
     status_msg = await update.message.reply_text("⏳ جاري بدء الإرسال الجماعي... يرجى الانتظار.")
     
     for user_id in users:
         try:
-            # التأكد من تحويل المعرف لرقم صحيح (حل مشكلة الـ String)
             await context.bot.send_message(
                 chat_id=int(user_id), 
                 text=message_text,
-                parse_mode='Markdown' # لدعم التنسيق الغامق والمائل في رسالتك
+                parse_mode='Markdown'
             )
             success_count += 1
+            # تأخير بسيط جداً (0.05 ثانية) لتجنب حظر التلجرام عند الإرسال المكثف
+            await asyncio.sleep(0.05) 
+            
         except Exception as e:
-            # تسجيل الخطأ وتجاوز المستخدم الذي حظر البوت
+            # إذا أخبرنا تلجرام أننا نرسل بسرعة كبيرة جداً
+            if "Flood control exceeded" in str(e):
+                await asyncio.sleep(20) # انتظر 20 ثانية ثم أكمل
+            
             logging.error(f"Error sending to {user_id}: {e}")
             fail_count += 1
 
-    # تحديث الرسالة النهائية بالنتائج
     result_text = (
         f"✅ **اكتملت عملية الإرسال الجماعي**\n"
-        f"-----------------------\n"
+        f"            -----------------------\n"
         f"• تم الإرسال بنجاح: {success_count}\n"
         f"• فشل الإرسال: {fail_count}\n"
-        f"-----------------------\n"
-        f"إجمالي القائمة: {len(users)}"
+        f"            -----------------------\n"
+        f"• إجمالي القائمة: {len(users)}"
     )
     
     await status_msg.edit_text(result_text, parse_mode='Markdown')
@@ -587,32 +651,54 @@ async def add_course_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         db = load_db()
         categories = db["categories"]
         if not categories:
-            await update.message.reply_text("لا توجد تصنيفات، الرجاء إضافة تصنيف أولاً.")
+            await update.message.reply_text("لا توجد أقسام، الرجاء إضافة قسم أولاً.")
             return ConversationHandler.END
 
         keyboard = [[InlineKeyboardButton(cat, callback_data=f"select_cat_{cat}")] for cat in categories]
-        await update.message.reply_text("اختر **تصنيف الدورة**:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("اختر **قسم الدورة**:", reply_markup=InlineKeyboardMarkup(keyboard))
         return ADD_COURSE_CAT
     except ValueError:
         await update.message.reply_text("الرجاء إدخال سعر صحيح (رقم).")
         return ADD_COURSE_PRICE
-
+#دالة إضافة دورة جديدة 
 async def add_course_cat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    category = query.data.split("select_cat_")[1]
-    context.user_data["temp_course_data"]["category"] = category
     
+    # استخراج القسم
+    category = query.data.split("select_cat_")[1]
+    
+    # الحصول على البيانات المؤقتة
+    temp_data = context.user_data.pop("temp_course_data", None)
+    if not temp_data:
+        await query.edit_message_text("❌ حدث خطأ في استرجاع بيانات الدورة.")
+        return ConversationHandler.END
+
+    temp_data["category"] = category
     db = load_db()
-    new_course = context.user_data.pop("temp_course_data")
-    new_course["id"] = len(db["courses"]) + 1
-    new_course["active"] = True
-    db["courses"].append(new_course)
+    
+    # حساب ID فريد
+    new_id = max(c["id"] for c in db["courses"]) + 1 if db["courses"] else 1
+        
+    temp_data["id"] = new_id
+    temp_data["active"] = True
+    db["courses"].append(temp_data)
     save_db(db)
     
-    await query.edit_message_text("✅ تم إضافة الدورة بنجاح!")
-    await show_manage_courses_menu(update, context)
+    # إنشاء زر للعودة يدوياً لتجنب الـ AttributeError
+    keyboard = [[InlineKeyboardButton("⬅️ العودة لإدارة الدورات", callback_data="dev_courses")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(
+        text=f"✅ تم إضافة الدورة: **{temp_data['name']}** بنجاح في قسم **{category}**.",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    
     return ConversationHandler.END
+
+
+
 
 
 async def delete_course_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -641,8 +727,11 @@ async def confirm_delete_course(update: Update, context: ContextTypes.DEFAULT_TY
     db["courses"] = [c for c in db["courses"] if c["id"] != course_id]
     save_db(db)
     
-    await query.edit_message_text(f"✅ تم حذف الدورة بنجاح.")
-    await show_manage_courses_menu(update, context)
+    await query.edit_message_text(
+        text=f"✅ تم حذف الدورة بنجاح.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ العودة لإدارة الدورات", callback_data="dev_courses")]])
+    )
+
     return ConversationHandler.END
 
 
@@ -673,7 +762,7 @@ async def edit_course_select_field(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("تعديل الاسم", callback_data="edit_field_name")],
         [InlineKeyboardButton("تعديل الوصف", callback_data="edit_field_desc")],
         [InlineKeyboardButton("تعديل السعر", callback_data="edit_field_price")],
-        [InlineKeyboardButton("تعديل التصنيف", callback_data="edit_field_cat")],
+        [InlineKeyboardButton("تعديل القسم", callback_data="edit_field_cat")],
         [InlineKeyboardButton("تغيير الحالة (متاح/غير متاح)", callback_data=f"toggle_status_{course_id}")],
         [InlineKeyboardButton("⬅️ إلغاء", callback_data="dev_courses")]
     ]
@@ -691,7 +780,7 @@ async def edit_course_get_new_value(update: Update, context: ContextTypes.DEFAUL
         db = load_db()
         categories = db["categories"]
         keyboard = [[InlineKeyboardButton(cat, callback_data=f"edit_cat_{cat}")] for cat in categories]
-        await query.edit_message_text("اختر التصنيف الجديد:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("اختر القسم الجديد:", reply_markup=InlineKeyboardMarkup(keyboard))
         return EDIT_COURSE_CAT
     else:
         await query.edit_message_text(f"الرجاء إرسال القيمة الجديدة لـ {field}:")
@@ -732,7 +821,7 @@ async def update_course_with_new_cat(update: Update, context: ContextTypes.DEFAU
             break
             
     save_db(db)
-    await query.edit_message_text(f"✅ تم تعديل تصنيف الدورة بنجاح.")
+    await query.edit_message_text(f"✅ تم تعديل قسم الدورة بنجاح.")
     await show_manage_courses_menu(update, context)
     return ConversationHandler.END
 
@@ -779,14 +868,14 @@ async def move_course_select_category(update: Update, context: ContextTypes.DEFA
     categories = db["categories"]
     
     if not categories:
-        await query.edit_message_text("لا توجد تصنيفات لنقل الدورة إليها.")
+        await query.edit_message_text("لا توجد أقسام لنقل الدورة إليها.")
         return ConversationHandler.END
 
     keyboard = [[InlineKeyboardButton(cat, callback_data=f"move_to_cat_{cat}")] for cat in categories]
     keyboard.append([InlineKeyboardButton("⬅️ إلغاء", callback_data="dev_courses")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text("اختر التصنيف الجديد للدورة:", reply_markup=reply_markup)
+    await query.edit_message_text("اختر القسم الجديد للدورة:", reply_markup=reply_markup)
     return MOVE_COURSE_SELECT_CAT
 
 async def move_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -806,38 +895,38 @@ async def move_course(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     await show_manage_courses_menu(update, context)
     return ConversationHandler.END
 
-# دوال إدارة التصنيفات
+# دوال إدارة الاقسام
 async def show_manage_categories_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     db = load_db()
     
-    categories_list = "\n".join([f"- {cat}" for cat in db["categories"]]) if db["categories"] else "لا توجد تصنيفات حالياً."
+    categories_list = "\n".join([f"- {cat}" for cat in db["categories"]]) if db["categories"] else "لا توجد أقسام حالياً."
     
     keyboard = [
-        [InlineKeyboardButton("➕ إضافة تصنيف جديد", callback_data="dev_add_cat")],
-        [InlineKeyboardButton("🗑️ حذف تصنيف", callback_data="dev_delete_cat")],
+        [InlineKeyboardButton("➕ إضافة قسم جديد", callback_data="dev_add_cat")],
+        [InlineKeyboardButton("🗑️ حذف قسم", callback_data="dev_delete_cat")],
         [InlineKeyboardButton("⬅️ رجوع", callback_data="dev_panel")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(f"**🗂️ إدارة التصنيفات**\n\n{categories_list}", reply_markup=reply_markup, parse_mode='Markdown')
+    await query.edit_message_text(f"**🗂️ إدارة الاقسام**\n\n{categories_list}", reply_markup=reply_markup, parse_mode='Markdown')
 
 async def add_category_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("الرجاء إدخال **اسم التصنيف** الجديد:")
+    await query.edit_message_text("الرجاء إدخال **اسم القسم** الجديد:")
     return ADD_CATEGORY_NAME
 
 async def add_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     category_name = update.message.text
     db = load_db()
     if category_name in db["categories"]:
-        await update.message.reply_text("هذا التصنيف موجود بالفعل.")
+        await update.message.reply_text("هذا القسم موجود بالفعل.")
     else:
         db["categories"].append(category_name)
         save_db(db)
-        await update.message.reply_text("✅ تم إضافة التصنيف بنجاح.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("✅ تم إضافة القسم بنجاح.", reply_markup=ReplyKeyboardRemove())
     
     return ConversationHandler.END
 
@@ -847,31 +936,47 @@ async def delete_category_start(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     db = load_db()
     if not db["categories"]:
-        await query.edit_message_text("لا توجد تصنيفات لحذفها.")
+        await query.edit_message_text("لا توجد أقسام لحذفها.")
         return ConversationHandler.END
     
     keyboard = [[InlineKeyboardButton(cat, callback_data=f"del_cat_confirm_{cat}")] for cat in db["categories"]]
     keyboard.append([InlineKeyboardButton("⬅️ إلغاء", callback_data="dev_categories")])
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text("اختر التصنيف الذي تريد حذفه:", reply_markup=reply_markup)
+    await query.edit_message_text("اختر القسم الذي تريد حذفه:", reply_markup=reply_markup)
     return DELETE_CATEGORY_CONFIRM
 
+#دالة حذف القسم 
 async def confirm_delete_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+    
+    # استخراج اسم القسم من البيانات المرسلة
     category_name = query.data.split("del_cat_confirm_")[1]
     
+    # تخزين الاسم في ذاكرة المؤقتة لاستخدامه في الخطوة التالية
     context.user_data["temp_category_name"] = category_name
     
+    # إنشاء الأزرار لاتخاذ القرار النهائي
     keyboard = [
-        [InlineKeyboardButton("حذف التصنيف فقط", callback_data="delete_cat_only")],
-        [InlineKeyboardButton("حذف التصنيف والدورات التابعة له", callback_data="delete_cat_with_courses")],
-        [InlineKeyboardButton("⬅️ إلغاء", callback_data="dev_categories")]
+        [
+            InlineKeyboardButton("🗑️ حذف القسم فقط", callback_data="delete_cat_only"),
+            InlineKeyboardButton("🔥 حذف القسم والدورات", callback_data="delete_cat_with_courses")
+        ],
+        [InlineKeyboardButton("⬅️ إلغاء والعودة", callback_data="dev_categories")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(f"هل تريد حذف التصنيف '{category_name}' فقط أم مع جميع الدورات التابعة له؟", reply_markup=reply_markup)
-    return DELETE_CATEGORY_CONFIRM
+    # تحديث الرسالة لتخيير المدير
+    await query.edit_message_text(
+        text=f"⚠️ **تنبيه هام:**\n\nأنت على وشك حذف القسم: **{category_name}**\n\n"
+             f"• حذف القسم فقط: ستبقى الدورات ولكن بدون تصنيف.\n"
+             f"• حذف القسم والدورات: سيتم مسح كل شيء متعلق بهذا القسم.",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    
+    return CONFIRM_FINAL_DELETE
+ 
 
 async def execute_delete_category(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -884,14 +989,26 @@ async def execute_delete_category(update: Update, context: ContextTypes.DEFAULT_
     if choice == "delete_cat_with_courses":
         db["courses"] = [c for c in db["courses"] if c["category"] != category_name]
         db["categories"].remove(category_name)
-        await query.edit_message_text(f"✅ تم حذف التصنيف '{category_name}' وجميع الدورات التابعة له بنجاح.")
+        await query.edit_message_text(f"✅ تم حذف القسم '{category_name}' وجميع الدورات التابعة له بنجاح.")
     elif choice == "delete_cat_only":
         db["categories"].remove(category_name)
-        await query.edit_message_text(f"✅ تم حذف التصنيف '{category_name}' فقط. الدورات التابعة له أصبحت بلا تصنيف.")
+        await query.edit_message_text(f"✅ تم حذف القسم '{category_name}' فقط. الدورات التابعة له أصبحت بلا قسم.")
     
-    save_db(db)
-    await show_manage_categories_menu(update, context)
+    save_db(db) # 👈 هذا السطر يجب أن يكون هنا (خارج الـ if والـ elif) ليحفظ في الحالتين
+
+    
+    # إنشاء زر للعودة يدوياً بدلاً من استدعاء الدالة التي تسبب الخطأ
+    keyboard = [[InlineKeyboardButton("⬅️ العودة لإدارة الأقسام", callback_data="dev_categories")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # تحديث الرسالة الأخيرة لتشمل زر العودة
+    await query.edit_message_text(
+        text=f"✅ اكتملت العملية بنجاح للقسم: {category_name}",
+        reply_markup=reply_markup
+    )
+    
     return ConversationHandler.END
+
 
 
 # دوال معالجة طلبات التسجيل (مدير)
@@ -960,36 +1077,78 @@ async def send_reject_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text("تم إرسال رسالة الرفض للمستخدم بنجاح.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+async def add_promo_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.edit_message_text("أرسل اسم الكود الجديد (مثال: SAVE50):")
+    return GET_PROMO_NAME
+
+async def get_promo_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["temp_promo_name"] = update.message.text.upper()
+    await update.message.reply_text("أرسل نسبة الخصم (رقم فقط، مثال: 20):")
+    return GET_PROMO_PERCENT
+
+async def get_promo_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    try:
+        percent = int(update.message.text)
+        db = load_db()
+        db["promo_codes"][context.user_data["temp_promo_name"]] = percent
+        save_db(db)
+        await update.message.reply_text(f"✅ تم تفعيل الكود {context.user_data['temp_promo_name']} بخصم {percent}%")
+        return ConversationHandler.END
+    except:
+        await update.message.reply_text("خطأ! أرسل رقماً صحيحاً.")
+        return GET_PROMO_PERCENT
+
+
+
 
 # دالة لمعالجة إيصال الدفع
 async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     db = load_db()
-    registration = next((reg for reg in db["registrations"] if reg["user_id"] == user_id and reg["status"] == "accepted"), None)
-    if registration and update.message.photo:
+    
+    # البحث عن طلب مقبول لهذا المستخدم ولم يرفع إيصالاً بعد
+    registration = next((reg for reg in db["registrations"] 
+                        if reg["user_id"] == user_id 
+                        and reg["status"] == "accepted" 
+                        and reg.get("receipt") is None), None)
+    
+    # إذا لم نجد طلب مقبول ينتظر إيصال، لا نفعل شيئاً وننهي الدالة فوراً
+    if not registration:
+        return
+
+    # حالة (1): أرسل صورة الإيصال
+    if update.message.photo:
+        # إنهاء أي محادثة معلقة برمجياً عبر مسح البيانات المؤقتة
+        context.user_data.clear() 
+        
         receipt_file_id = update.message.photo[-1].file_id
         registration["receipt"] = receipt_file_id
         save_db(db)
         
-        admin_ids_to_notify = db["admins"]
+        # ... تكملة كود الإرسال للمديرين كما هي في كودك الأصلي ...
+        admin_ids_to_notify = db.get("admins", [])
         if admin_ids_to_notify:
             course = next((c for c in db["courses"] if c["id"] == registration['course_id']), None)
             caption = (
-                f"**🔔 تم استلام إيصال دفع جديد**\n\n"
-                f"**الدورة:** {course['name'] if course else 'غير معروفة'}\n"
-                f"**الاسم:** {registration['name']}\n"
-                f"**معرف المستخدم:** `{registration['user_id']}`"
+                f"**🔔 تم استلام إيصال دفع جديد**\n"
+                f"            -----------------------\n"
+                f"• الدورة: {course['name'] if course else 'غير معروفة'}\n"
+                f"• الاسم: {registration['name']}\n"
+                f"• الايدي: `{registration['user_id']}`\n"
+                f"            -----------------------"
             )
             for admin_id in admin_ids_to_notify:
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=receipt_file_id,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-            await update.message.reply_text("شكراً لك! تم إرسال إيصالك للمراجعة.")
+                try:
+                    await context.bot.send_photo(chat_id=admin_id, photo=receipt_file_id, caption=caption, parse_mode='Markdown')
+                except Exception: continue
+            
+            await update.message.reply_text("✅ شكراً لك! تم إرسال إيصال الدفع بنجاح.")
+
+    # حالة (2): أرسل نصاً وهو مطلوب منه صورة
     else:
-        pass
+        await update.message.reply_text("⚠️ عذراً، يجب عليك إرسال إيصال الدفع كـ **صورة** (Screenshot).")
+
+
 
 
 # دالة لمعالجة جميع الأزرار (Callback Queries)
@@ -1025,11 +1184,63 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+# دالة إرسال النسخة الاحتياطية للمطور
+async def download_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    if os.path.exists(DB_FILE):
+        await context.bot.send_document(
+            chat_id=update.effective_user.id,
+            document=open(DB_FILE, 'rb'),
+            filename=DB_FILE,
+            caption="✅ هذه هي النسخة الاحتياطية الحالية لقاعدة البيانات."
+        )
+    else:
+        await query.edit_message_text("⚠️ ملف قاعدة البيانات غير موجود حالياً.")
+
+# دالة بدء عملية الرفع
+async def upload_backup_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("الرجاء إرسال ملف `db.json` الآن لاستبدال قاعدة البيانات الحالية:")
+    return GET_BACKUP_FILE
+
+# دالة استلام وحفظ الملف الجديد
+async def receive_backup_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    document = update.message.document
+    
+    # التأكد أن الملف المرسل هو ملف JSON
+    if not document.file_name.endswith('.json'):
+        await update.message.reply_text("❌ خطأ: يرجى إرسال ملف ينتهي بصيغة .json فقط.")
+        return GET_BACKUP_FILE
+
+    file = await context.bot.get_file(document.file_id)
+    await file.download_to_drive(DB_FILE) # استبدال الملف القديم
+    
+    await update.message.reply_text("✅ تم تحديث قاعدة البيانات بنجاح! سيتم العمل بالبيانات الجديدة الآن.")
+    return ConversationHandler.END
+
+
+
+
+async def send_follow_up(context: ContextTypes.JOB) -> None:
+    db = load_db()
+    user_id = context.job.data
+    # إذا كان المستخدم مقبولاً ولم يرسل إيصالاً بعد
+    pending = [r for r in db["registrations"] if r["user_id"] == user_id and r["status"] == "accepted" and r["receipt"] is None]
+    if pending:
+        try:
+            await context.bot.send_message(chat_id=user_id, text="👋 أهلاً بك! لا تنسَ إرسال إيصال الدفع لإتمام تسجيلك في الدورة.")
+        except: pass
+
+
+
 # دالة رئيسية لتشغيل البوت
 def main() -> None:
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # ConversationHandler لعملية تسجيل المستخدم
+    # 1. ConversationHandler لعملية تسجيل المستخدم
     user_reg_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_registration, pattern=r"^register_\d+$")],
         states={
@@ -1044,7 +1255,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # ConversationHandler لرسائل المدير المخصصة للقبول/الرفض
+    # 2. ConversationHandler لرسائل المدير المخصصة للقبول/الرفض
     admin_msg_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(accept_registration, pattern=r"^accept_\d+_\d+$"),
@@ -1057,7 +1268,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # ConversationHandler لإدارة المستخدمين
+    # 3. ConversationHandler لإدارة المستخدمين
     admin_user_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(add_admin_start, pattern="^dev_add_admin$"),
@@ -1070,7 +1281,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # ConversationHandler لإرسال رسالة جماعية
+    # 4. ConversationHandler لإرسال رسالة جماعية
     admin_broadcast_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(broadcast_start, pattern="^dev_broadcast$")],
         states={
@@ -1079,7 +1290,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    # ConversationHandler لإضافة دورة جديدة
+    # 5. ConversationHandler لإضافة دورة جديدة
     admin_add_course_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(add_course_start, pattern="^dev_add_course$")],
         states={
@@ -1091,20 +1302,22 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # ConversationHandler لتعديل دورة
+    # 6. ConversationHandler لتعديل دورة
     admin_edit_course_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(edit_course_start, pattern="^dev_edit_course$")],
+        entry_points=[CallbackQueryHandler(edit_course_start, pattern=r"^dev_edit_course$")],
         states={
             EDIT_COURSE_SELECT_COURSE: [CallbackQueryHandler(edit_course_select_field, pattern=r"^edit_select_\d+$")],
-            EDIT_COURSE_SELECT_FIELD: [CallbackQueryHandler(edit_course_get_new_value, pattern=r"^edit_field_"),
-                                       CallbackQueryHandler(toggle_course_status, pattern=r"^toggle_status_\d+$")],
+            EDIT_COURSE_SELECT_FIELD: [
+                CallbackQueryHandler(edit_course_get_new_value, pattern=r"^edit_field_"),
+                CallbackQueryHandler(toggle_course_status, pattern=r"^toggle_status_\d+$")
+            ],
             EDIT_COURSE_NEW_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_course_with_new_value)],
             EDIT_COURSE_CAT: [CallbackQueryHandler(update_course_with_new_cat, pattern=r"^edit_cat_")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    # ConversationHandler لحذف دورة
+    # 7. ConversationHandler لحذف دورة
     admin_delete_course_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(delete_course_start, pattern="^dev_delete_course$")],
         states={
@@ -1113,7 +1326,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # ConversationHandler لنقل دورة (جديد)
+    # 8. ConversationHandler لنقل دورة
     admin_move_course_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(move_course_start, pattern="^dev_move_course$")],
         states={
@@ -1123,7 +1336,7 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    # ConversationHandler لإدارة التصنيفات
+    # 9. ConversationHandler لإدارة الاقسام
     admin_category_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(add_category_start, pattern="^dev_add_cat$"),
@@ -1131,13 +1344,42 @@ def main() -> None:
         ],
         states={
             ADD_CATEGORY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_category)],
-            DELETE_CATEGORY_CONFIRM: [CallbackQueryHandler(execute_delete_category, pattern=r"^(delete_cat_only|delete_cat_with_courses)$")]
+            DELETE_CATEGORY_CONFIRM: [CallbackQueryHandler(confirm_delete_category, pattern=r"^del_cat_confirm_")],
+            CONFIRM_FINAL_DELETE: [ 
+                CallbackQueryHandler(execute_delete_category, pattern=r"^(delete_cat_only|delete_cat_with_courses)$"),
+                CallbackQueryHandler(show_manage_categories_menu, pattern="^dev_categories$") 
+            ]
         },
-        fallbacks=[CommandHandler("cancel", cancel)]
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(show_manage_categories_menu, pattern="^dev_categories$")
+        ],
+        allow_reentry=True
     )
 
-    # إضافة Handlers
+    # 10. ConversationHandler لرفع النسخة الاحتياطية
+    admin_backup_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(upload_backup_start, pattern="^backup_upload$")],
+        states={
+            GET_BACKUP_FILE: [MessageHandler(filters.Document.ALL, receive_backup_file)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # 11. ConversationHandler لإضافة الأكواد الترويجية
+    admin_promo_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_promo_start, pattern="^dev_add_promo$")],
+        states={
+            GET_PROMO_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_promo_name)],
+            GET_PROMO_PERCENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_promo_percent)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # --- إضافة الـ Handlers إلى التطبيق ---
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_receipt))
+
     application.add_handler(user_reg_handler)
     application.add_handler(admin_msg_handler)
     application.add_handler(admin_user_handler)
@@ -1145,17 +1387,19 @@ def main() -> None:
     application.add_handler(admin_add_course_handler)
     application.add_handler(admin_edit_course_handler)
     application.add_handler(admin_delete_course_handler)
-    application.add_handler(admin_move_course_handler) # إضافة الـ Handler الجديد هنا
+    application.add_handler(admin_move_course_handler)
     application.add_handler(admin_category_handler)
+    application.add_handler(admin_promo_handler)
+    application.add_handler(admin_backup_handler)
+
+    application.add_handler(CallbackQueryHandler(download_backup, pattern="^backup_download$"))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(MessageHandler(filters.PHOTO, handle_receipt))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_receipt)) 
     
-    # تشغيل البوت
-    print("البوت يعمل...")
+    print("البوت يعمل بنجاح...")
     application.run_polling()
+
+  
 
 if __name__ == "__main__":
     main()
-
-
-
