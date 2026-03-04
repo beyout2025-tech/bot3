@@ -3,6 +3,7 @@ import os
 import logging
 import json
 import asyncio
+import re
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
@@ -1100,34 +1101,67 @@ async def get_promo_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 # دالة لمعالجة إيصال الدفع
+ # تأكد من وجود هذا الاستيراد في أعلى الملف للبحث عن الأرقام
+
 async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     db = load_db()
-    registration = next((reg for reg in db["registrations"] if reg["user_id"] == user_id and reg["status"] == "accepted"), None)
-    if registration and update.message.photo:
-        receipt_file_id = update.message.photo[-1].file_id
-        registration["receipt"] = receipt_file_id
+    
+    # البحث عن طلب مقبول بانتظار الإيصال
+    registration = next((reg for reg in db["registrations"] 
+                        if reg["user_id"] == user_id 
+                        and reg["status"] == "accepted" 
+                        and reg.get("receipt") is None), None)
+
+    # إذا لم يكن لديه طلب مقبول، نتجاهل الرسالة أو نعطيه تنبيه بسيط
+    if not registration:
+        # يمكنك تفعيل السطر التالي إذا أردت تنبيهه، أو تركه صامتاً
+        # await update.message.reply_text("⚠️ ليس لديك طلب مقبول حالياً بانتظار إيصال.")
+        return
+
+    admin_ids = db.get("admins", [])
+    course = next((c for c in db["courses"] if c["id"] == registration['course_id']), None)
+    course_name = course['name'] if course else 'غير معروفة'
+    
+    # تجهيز الكابشن الموحد للإدارة
+    admin_caption = (
+        f"**💰 إيصال دفع جديد وصل!**\n\n"
+        f"**👤 الطالب:** {registration['name']}\n"
+        f"**📚 الدورة:** {course_name}\n"
+        f"**🆔 الايدي:** `{user_id}`"
+    )
+
+    # 1. إذا أرسل صورة
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        registration["receipt"] = f"صورة: {file_id}"
         save_db(db)
-        
-        admin_ids_to_notify = db["admins"]
-        if admin_ids_to_notify:
-            course = next((c for c in db["courses"] if c["id"] == registration['course_id']), None)
-            caption = (
-                f"**🔔 تم استلام إيصال دفع جديد**\n\n"
-                f"**الدورة:** {course['name'] if course else 'غير معروفة'}\n"
-                f"**الاسم:** {registration['name']}\n"
-                f"**معرف المستخدم:** `{registration['user_id']}`"
-            )
-            for admin_id in admin_ids_to_notify:
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=receipt_file_id,
-                    caption=caption,
-                    parse_mode='Markdown'
-                )
-            await update.message.reply_text("شكراً لك! تم إرسال إيصالك للمراجعة.")
-    else:
-        pass
+        await update.message.reply_text("✅ تم استلام صورة الإيصال بنجاح.")
+        for admin_id in admin_ids:
+            await context.bot.send_photo(chat_id=admin_id, photo=file_id, caption=admin_caption, parse_mode='Markdown')
+
+    # 2. إذا أرسل ملف (PDF, Doc, إلخ)
+    elif update.message.document:
+        file_id = update.message.document.file_id
+        registration["receipt"] = f"ملف: {file_id}"
+        save_db(db)
+        await update.message.reply_text("✅ تم استلام ملف الإيصال بنجاح.")
+        for admin_id in admin_ids:
+            await context.bot.send_document(chat_id=admin_id, document=file_id, caption=admin_caption, parse_mode='Markdown')
+
+    # 3. إذا أرسل نصاً (رقم حوالة)
+    elif update.message.text:
+        text = update.message.text
+        # التحقق إذا كان النص يحتوي على أرقام (على الأقل 4 أرقام لضمان الجدية)
+        if re.search(r'\d{4,}', text):
+            registration["receipt"] = f"نص/رقم: {text}"
+            save_db(db)
+            await update.message.reply_text("✅ تم استلام رقم الحوالة بنجاح.")
+            for admin_id in admin_ids:
+                await context.bot.send_message(chat_id=admin_id, text=f"{admin_caption}\n**📝 رقم/بيانات الحوالة:**\n`{text}`", parse_mode='Markdown')
+        else:
+            await update.message.reply_text("❌ خطأ: يرجى إرسال رقم الحوالة بشكل صحيح (يجب أن يحتوي على أرقام).")
+
 
 
 
@@ -1358,7 +1392,10 @@ def main() -> None:
 
     # --- إضافة الـ Handlers إلى التطبيق ---
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_receipt))
+    application.add_handler(MessageHandler(
+    (filters.PHOTO | filters.Document.ALL | filters.TEXT) & ~filters.COMMAND, 
+    handle_receipt
+))
 
     application.add_handler(user_reg_handler)
     application.add_handler(admin_msg_handler)
@@ -1374,7 +1411,8 @@ def main() -> None:
 
     application.add_handler(CallbackQueryHandler(download_backup, pattern="^backup_download$"))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_receipt)) 
+
+
     
     print("البوت يعمل بنجاح...")
     application.run_polling()
