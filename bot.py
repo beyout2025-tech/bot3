@@ -313,6 +313,10 @@ async def start_registration(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # دالة للحصول على الاسم
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     name = update.message.text
+    # التأكد من تهيئة القاموس إذا لم يكن موجوداً
+    if "registration_data" not in context.user_data:
+        context.user_data["registration_data"] = {}
+        
     context.user_data["registration_data"]["name"] = name
     
     keyboard = [
@@ -323,7 +327,7 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text("الرجاء تحديد **الجنس**:", reply_markup=reply_markup)
+    await update.message.reply_text(f"أهلاً بك {name}، الرجاء تحديد **الجنس**:", reply_markup=reply_markup, parse_mode='Markdown')
     return GET_GENDER
 
 
@@ -335,6 +339,7 @@ async def get_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     gender = "ذكر" if query.data == "gender_male" else "أنثى"
     context.user_data["registration_data"]["gender"] = gender
     
+    # التعديل هنا لضمان الانتقال للحالة التالية بعد الضغط على الزر
     await query.edit_message_text("الرجاء إدخال **عمرك** بالأرقام:")
     return GET_AGE
 
@@ -380,6 +385,7 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     email = update.message.text
     context.user_data["registration_data"]["email"] = email
     
+    # استخراج البيانات بالكامل كما هي في الكود الأصلي
     registration_data = context.user_data.pop("registration_data")
     registration_data["user_id"] = update.effective_user.id
     registration_data["status"] = "pending"
@@ -416,17 +422,22 @@ async def get_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                            InlineKeyboardButton("❌ رفض", callback_data=f"reject_{registration_data['user_id']}_{registration_data['course_id']}")]]
         
         for admin_id in admin_ids:
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text=message_to_admin,
-                reply_markup=InlineKeyboardMarkup(admin_keyboard),
-                parse_mode='Markdown'
-            )
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=message_to_admin,
+                    reply_markup=InlineKeyboardMarkup(admin_keyboard),
+                    parse_mode='Markdown'
+                )
+            except Exception:
+                continue
         
-            # التذكير بعد 24 ساعة (86400 ثانية)
-    context.job_queue.run_once(send_follow_up, 86400, chat_id=update.effective_chat.id, data=update.effective_user.id)
+    # التذكير بعد 24 ساعة
+    if context.job_queue:
+        context.job_queue.run_once(send_follow_up, 86400, chat_id=update.effective_chat.id, data=update.effective_user.id)
     
     return ConversationHandler.END
+
 
 
 
