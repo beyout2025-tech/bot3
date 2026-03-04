@@ -1043,7 +1043,7 @@ async def send_accept_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     await update.message.reply_text("تم إرسال رسالة القبول للمستخدم بنجاح.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
-
+    
 
 async def reject_registration(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -1099,55 +1099,35 @@ async def get_promo_percent(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return GET_PROMO_PERCENT
 
 
-
-
 # دالة لمعالجة إيصال الدفع
 async def handle_receipt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     db = load_db()
-    
-    # البحث عن طلب مقبول لهذا المستخدم ولم يرفع إيصالاً بعد
-    registration = next((reg for reg in db["registrations"] 
-                        if reg["user_id"] == user_id 
-                        and reg["status"] == "accepted" 
-                        and reg.get("receipt") is None), None)
-    
-    # إذا لم نجد طلب مقبول ينتظر إيصال، لا نفعل شيئاً وننهي الدالة فوراً
-    if not registration:
-        return
-
-    # حالة (1): أرسل صورة الإيصال
-    if update.message.photo:
-        # إنهاء أي محادثة معلقة برمجياً عبر مسح البيانات المؤقتة
-        context.user_data.clear() 
-        
+    registration = next((reg for reg in db["registrations"] if reg["user_id"] == user_id and reg["status"] == "accepted"), None)
+    if registration and update.message.photo:
         receipt_file_id = update.message.photo[-1].file_id
         registration["receipt"] = receipt_file_id
         save_db(db)
         
-        # ... تكملة كود الإرسال للمديرين كما هي في كودك الأصلي ...
-        admin_ids_to_notify = db.get("admins", [])
+        admin_ids_to_notify = db["admins"]
         if admin_ids_to_notify:
             course = next((c for c in db["courses"] if c["id"] == registration['course_id']), None)
             caption = (
-                f"**🔔 تم استلام إيصال دفع جديد**\n"
-                f"            -----------------------\n"
-                f"• الدورة: {course['name'] if course else 'غير معروفة'}\n"
-                f"• الاسم: {registration['name']}\n"
-                f"• الايدي: `{registration['user_id']}`\n"
-                f"            -----------------------"
+                f"**🔔 تم استلام إيصال دفع جديد**\n\n"
+                f"**الدورة:** {course['name'] if course else 'غير معروفة'}\n"
+                f"**الاسم:** {registration['name']}\n"
+                f"**معرف المستخدم:** `{registration['user_id']}`"
             )
             for admin_id in admin_ids_to_notify:
-                try:
-                    await context.bot.send_photo(chat_id=admin_id, photo=receipt_file_id, caption=caption, parse_mode='Markdown')
-                except Exception: continue
-            
-            await update.message.reply_text("✅ شكراً لك! تم إرسال إيصال الدفع بنجاح.")
-
-    # حالة (2): أرسل نصاً وهو مطلوب منه صورة
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=receipt_file_id,
+                    caption=caption,
+                    parse_mode='Markdown'
+                )
+            await update.message.reply_text("شكراً لك! تم إرسال إيصالك للمراجعة.")
     else:
-        await update.message.reply_text("⚠️ عذراً، يجب عليك إرسال إيصال الدفع كـ **صورة** (Screenshot).")
-
+        pass
 
 
 
