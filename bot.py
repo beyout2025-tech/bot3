@@ -1224,7 +1224,7 @@ async def receive_backup_file(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 
-async def send_follow_up(context: ContextTypes.JOB) -> None:
+async def send_follow_up(context: ContextTypes.DEFAULT_TYPE) -> None:
     db = load_db()
     user_id = context.job.data
     # إذا كان المستخدم مقبولاً ولم يرسل إيصالاً بعد
