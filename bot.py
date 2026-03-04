@@ -1419,13 +1419,10 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # --- إضافة الـ Handlers إلى التطبيق ---
+        # --- إضافة الـ Handlers إلى التطبيق ---
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(
-    (filters.PHOTO | filters.Document.ALL | filters.TEXT) & ~filters.COMMAND, 
-    handle_receipt
-))
 
+    # 1. يجب وضع جميع الـ ConversationHandlers أولاً
     application.add_handler(user_reg_handler)
     application.add_handler(admin_msg_handler)
     application.add_handler(admin_user_handler)
@@ -1438,9 +1435,15 @@ def main() -> None:
     application.add_handler(admin_promo_handler)
     application.add_handler(admin_backup_handler)
 
+    # 2. ثم نضع الـ MessageHandler العام للإيصالات (ليعمل فقط إذا لم تكن هناك محادثة نشطة)
+    application.add_handler(MessageHandler(
+        (filters.PHOTO | filters.Document.ALL | filters.TEXT) & ~filters.COMMAND, 
+        handle_receipt
+    ))
+
+    # 3. ثم الـ CallbackQueryHandler العام في الأخير
     application.add_handler(CallbackQueryHandler(download_backup, pattern="^backup_download$"))
     application.add_handler(CallbackQueryHandler(handle_callback_query))
-
 
     
     print("البوت يعمل بنجاح...")
