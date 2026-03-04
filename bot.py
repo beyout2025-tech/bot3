@@ -125,18 +125,36 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     
     keyboard = [
-        [InlineKeyboardButton("📚 استعراض الاقسام", callback_data="show_categories")]
+        [InlineKeyboardButton("📚 استعراض الاقسام", callback_data="show_categories")],
+        # الزر الجديد لزيادة الثقة والتواصل المباشر
+        [InlineKeyboardButton("💬 التواصل مع الإدارة", url="https://t.me/Al_Mushakibot")]
     ]
+    
     if user_id in db["admins"]:
         keyboard.append([InlineKeyboardButton("🔧 لوحة المطور", callback_data="dev_panel")])
+        
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # رسالة ترحيبية باسم المؤسسة لتعزيز العلامة التجارية
+    welcome_text = (
+        "🎓 **مؤسسة كن أنت للتدريب والتأهيل**\n"
+        "مرحباً بك! نحن هنا لمساعدتك في رحلة تطوير مهاراتك.\n\n"
+        "اختر من القائمة الرئيسية:"
+    )
     
     if update.callback_query:
         await update.callback_query.edit_message_text(
-            text="اختر من القائمة الرئيسية:", reply_markup=reply_markup
+            text=welcome_text, 
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
         )
     else:
-        await update.message.reply_text("اختر من القائمة الرئيسية:", reply_markup=reply_markup)
+        await update.message.reply_text(
+            text=welcome_text, 
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
+
 
 # دالة أمر /start المحدثة بإشعار دخول مفصل
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
